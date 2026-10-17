@@ -255,6 +255,37 @@ class BabySoundEngine {
       osc.stop(t + 0.95);
     });
   }
+
+  /**
+   * Play a joyful ascending pentatonic harp glissando during stage fade-out/fade-in transitions
+   */
+  public playStageTransitionWhoosh() {
+    if (this.isMuted) return;
+    this.ensureRunning();
+    if (!this.ctx || !this.masterGain) return;
+
+    const notes = [392.0, 440.0, 523.25, 587.33, 659.25, 783.99, 1046.5]; // G4 -> C6 pentatonic sweep
+    const audioTime = this.ctx.currentTime;
+
+    notes.forEach((freq, i) => {
+      if (!this.ctx || !this.masterGain) return;
+      const t = audioTime + i * 0.065;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = i % 2 === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+
+      const vol = getSafeVolume(0.14 - i * 0.01, this.isMuted);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(vol, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.6);
+    });
+  }
 }
 
 export const babySound = new BabySoundEngine();

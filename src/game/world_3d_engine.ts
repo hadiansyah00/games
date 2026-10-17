@@ -23,10 +23,12 @@ import { babySound } from './sound';
 import {
   GamePlayMode,
   ScoreState,
+  StageCelebrationMeta,
   createInitialScoreState,
   registerScoreHit,
   tickComboTimer,
   advanceScoreTarget,
+  getStageCelebrationMeta,
 } from './score_rules';
 
 // Pre-allocated scratch math objects (Zero GC inside requestAnimationFrame)
@@ -447,20 +449,40 @@ export class ToddlerWorld3DEngine {
     return this.scoreState;
   }
 
-  public resetScoreRun() {
+  public resetScoreRun(): StageCelebrationMeta {
     this.scoreState = createInitialScoreState(this.scoreState.bestScore, 200);
-    this.emitScoreUpdate();
+    const meta = getStageCelebrationMeta(this.scoreState.stage);
+    if (THEMES[meta.themeId]) {
+      this.theme = THEMES[meta.themeId];
+      this.applyThemeVisuals();
+    }
+    this.camCurrentPos.set(0, 6.2, 12.2);
     this.clearAllToys(false);
     this.spawnInitialToys();
+    this.emitScoreUpdate();
+    return meta;
   }
 
-  public continueNextScoreStage() {
+  public continueNextScoreStage(): StageCelebrationMeta {
     this.scoreState = advanceScoreTarget(this.scoreState);
-    this.emitScoreUpdate();
-    // Spawn bonus celebration stars
-    for (let i = 0; i < 4; i++) {
-      this.spawnToy3D((i - 1.5) * 2.1, 1.2 + i * 0.2, 0, 'star');
+    const meta = getStageCelebrationMeta(this.scoreState.stage);
+    if (THEMES[meta.themeId]) {
+      this.theme = THEMES[meta.themeId];
+      this.applyThemeVisuals();
     }
+    // Gentle celebratory camera swoop in from above as the curtain fades in
+    this.camCurrentPos.set(0, 6.4, 12.4);
+    this.clearAllToys(false);
+    this.spawnInitialToys();
+    // Spawn bonus celebration stars in a cheerful arc
+    for (let i = 0; i < 4; i++) {
+      const starX = (i - 1.5) * 2.1;
+      const starY = 1.2 + (i % 2) * 0.35;
+      this.spawnToy3D(starX, starY, 0.2, 'star');
+      this.burstParticles3D(starX, starY + 0.5, 0.2, 14, meta.accentHex);
+    }
+    this.emitScoreUpdate();
+    return meta;
   }
 
   public setCameraPreset(preset: CameraPreset) {

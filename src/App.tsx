@@ -12,12 +12,18 @@ import {
 import {
   GamePlayMode,
   ScoreState,
+  StageCelebrationMeta,
+  TransitionEnvelope,
   createInitialScoreState,
+  getStageCelebrationMeta,
+  calculateTransitionEnvelope,
+  DEFAULT_TRANSITION_DURATION_MS,
 } from './game/score_rules';
 import { THEMES } from './game/themes';
 import { babySound } from './game/sound';
 import { TitleScreen } from './components/TitleScreen';
 import { ParentModal } from './components/ParentModal';
+import { StageTransitionCurtain } from './components/StageTransitionCurtain';
 import {
   Settings,
   Volume2,
@@ -33,6 +39,7 @@ import {
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<ToddlerWorld3DEngine | null>(null);
+  const transitionTimerRef = useRef<number | null>(null);
 
   // Check ?autostart=1 parameter
   const searchParams =
@@ -53,6 +60,18 @@ export default function App() {
     createInitialScoreState(0, 200)
   );
   const [scorePopups, setScorePopups] = useState<FloatingScorePopup[]>([]);
+
+  // Smooth Fade-Out / Fade-In Stage Transition State
+  const [transitionEnvelope, setTransitionEnvelope] = useState<TransitionEnvelope>({
+    phase: 'idle',
+    opacity: 0,
+    starScale: 0.7,
+    sceneSwapped: false,
+    progress: 0,
+  });
+  const [transitionMeta, setTransitionMeta] = useState<StageCelebrationMeta>(() =>
+    getStageCelebrationMeta(1)
+  );
 
   // Mirror state to document.body.dataset.state
   useEffect(() => {
@@ -103,6 +122,9 @@ export default function App() {
     container.addEventListener('touchmove', preventTouchGestures, { passive: false });
 
     return () => {
+      if (transitionTimerRef.current !== null) {
+        window.clearInterval(transitionTimerRef.current);
+      }
       window.removeEventListener('resize', handleResize);
       container.removeEventListener('touchstart', preventTouchGestures);
       container.removeEventListener('touchmove', preventTouchGestures);
@@ -110,6 +132,58 @@ export default function App() {
       engineRef.current = null;
     };
   }, []);
+
+  // Run smooth fade-out -> stage swap hold -> fade-in transition
+  const triggerStageTransition = useCallback(
+    (
+      targetStage: number,
+      onMidpointSwap: () => void,
+      durationMs: number = DEFAULT_TRANSITION_DURATION_MS
+    ) => {
+      if (transitionTimerRef.current !== null) {
+        window.clearInterval(transitionTimerRef.current);
+        transitionTimerRef.current = null;
+      }
+
+      const meta = getStageCelebrationMeta(targetStage);
+      setTransitionMeta(meta);
+      babySound.ensureRunning();
+      babySound.playStageTransitionWhoosh();
+
+      const startTime = performance.now();
+      let swapped = false;
+
+      // Immediate initial fade-out frame
+      setTransitionEnvelope(calculateTransitionEnvelope(16, durationMs));
+
+      transitionTimerRef.current = window.setInterval(() => {
+        const elapsed = performance.now() - startTime;
+        const env = calculateTransitionEnvelope(elapsed, durationMs);
+
+        if (env.sceneSwapped && !swapped) {
+          swapped = true;
+          onMidpointSwap();
+        }
+
+        setTransitionEnvelope(env);
+
+        if (elapsed >= durationMs) {
+          if (transitionTimerRef.current !== null) {
+            window.clearInterval(transitionTimerRef.current);
+            transitionTimerRef.current = null;
+          }
+          setTransitionEnvelope({
+            phase: 'idle',
+            opacity: 0,
+            starScale: 0.7,
+            sceneSwapped: true,
+            progress: 1,
+          });
+        }
+      }, 30);
+    },
+    []
+  );
 
   // Start or Resume Game
   const handleStartGame = useCallback(() => {
@@ -127,27 +201,49 @@ export default function App() {
     document.body.dataset.state = 'playing';
   }, []);
 
-  // Continue after reaching Target Score Milestone
+  // Continue after reaching Target Score Milestone with Smooth Fade-Out / Fade-In Curtain
   const handleContinueNextTarget = useCallback(() => {
-    babySound.ensureRunning();
-    engineRef.current?.continueNextScoreStage();
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
-    setGameState('playing');
-    document.body.dataset.state = 'playing';
-  }, []);
+    const currentStage = engineRef.current?.getScoreState().stage ?? scoreState.stage;
+    const nextStage = currentStage + 1;
 
-  // Reset Score Run
+    // Close milestone dialog immediately as cheerful curtain fades out & reveals next stage
+    setGameState('playing');
+    document.body.dataset.state = 'playing';
+
+    triggerStageTransition(
+      nextStage,
+      () => {
+        const appliedMeta = engineRef.current?.continueNextScoreStage();
+        if (appliedMeta) {
+          setCurrentThemeId(appliedMeta.themeId);
+        }
+      },
+      DEFAULT_TRANSITION_DURATION_MS
+    );
+  }, [scoreState.stage, triggerStageTransition]);
+
+  // Reset Score Run with Smooth Curtain Back to Stage 1
   const handleResetScore = useCallback(() => {
-    babySound.ensureRunning();
-    engineRef.current?.resetScoreRun();
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
     setGameState('playing');
     document.body.dataset.state = 'playing';
-  }, []);
+
+    triggerStageTransition(
+      1,
+      () => {
+        const appliedMeta = engineRef.current?.resetScoreRun();
+        if (appliedMeta) {
+          setCurrentThemeId(appliedMeta.themeId);
+        }
+      },
+      900
+    );
+  }, [triggerStageTransition]);
 
   // Select Play Mode
   const handleSelectPlayMode = useCallback((mode: GamePlayMode) => {
@@ -234,6 +330,8 @@ export default function App() {
     100,
     Math.round((scoreState.score / Math.max(1, scoreState.targetScore)) * 100)
   );
+  const currentStageMeta = getStageCelebrationMeta(scoreState.stage);
+  const nextStageMeta = getStageCelebrationMeta(scoreState.stage + 1);
 
   return (
     <div
@@ -249,6 +347,9 @@ export default function App() {
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
       />
+
+      {/* Cheerful Fade-Out / Fade-In Stage Transition Curtain */}
+      <StageTransitionCurtain envelope={transitionEnvelope} meta={transitionMeta} />
 
       {/* Floating +Score Popups */}
       {gameState === 'playing' && playMode === 'score' && (
@@ -311,6 +412,19 @@ export default function App() {
                 </svg>
 
                 <div>
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <span
+                      data-testid="stage-badge"
+                      className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider text-amber-950"
+                      style={{ backgroundColor: currentStageMeta.accentHex }}
+                    >
+                      TAHAP {scoreState.stage}
+                    </span>
+                    <span className="hidden sm:inline text-[11px] font-bold text-amber-200 truncate max-w-[140px]">
+                      {currentStageMeta.title}
+                    </span>
+                  </div>
+
                   <div className="flex items-baseline gap-2">
                     <span className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
                       SKOR
@@ -546,8 +660,11 @@ export default function App() {
           aria-label="Target Skor Tercapai"
         >
           <div className="w-full max-w-md bg-amber-50 rounded-3xl p-6 shadow-2xl border-4 border-amber-400 text-center text-amber-950">
-            <div className="w-16 h-16 rounded-2xl bg-amber-400 text-amber-950 flex items-center justify-center mx-auto mb-3 shadow-md">
+            <div className="w-16 h-16 rounded-2xl bg-amber-400 text-amber-950 flex items-center justify-center mx-auto mb-2.5 shadow-md">
               <Trophy size={36} />
+            </div>
+            <div className="inline-block px-3 py-0.5 rounded-full bg-amber-200 text-amber-900 text-xs font-extrabold uppercase tracking-wider mb-1">
+              Tahap {scoreState.stage} Selesai!
             </div>
             <h2 className="text-2xl sm:text-3xl font-black">Pesta Bintang 3D!</h2>
             <p className="text-sm text-amber-800 font-semibold mt-1">
@@ -556,7 +673,7 @@ export default function App() {
 
             {/* 3 Tabular-Nums Mastery Stat Tiles */}
             <div
-              className="grid grid-cols-3 gap-2.5 my-5"
+              className="grid grid-cols-3 gap-2.5 my-4"
               style={{ fontVariantNumeric: 'tabular-nums' }}
             >
               <div className="p-3 rounded-2xl bg-amber-200/80 border border-amber-300">
@@ -585,6 +702,14 @@ export default function App() {
                   {Math.round(scoreState.bestScore)}
                 </div>
               </div>
+            </div>
+
+            {/* Next Stage Preview Pill */}
+            <div className="mb-4 px-3.5 py-2 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center gap-2 text-xs font-bold text-amber-900">
+              <Sparkles size={15} className="text-amber-600 shrink-0" />
+              <span>
+                Selanjutnya: <strong>Tahap {nextStageMeta.stage} — {nextStageMeta.title}</strong>
+              </span>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-2.5">
