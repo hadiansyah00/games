@@ -1,0 +1,6 @@
+{
+  "name": "Balita Ceria - Game Sensorik & Suara Bayi",
+  "description": "Game interaktif ramah balita dan bayi dengan stimulasi warna cerah, animasi lembut, swipe interaktif, dan efek suara harmonis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
