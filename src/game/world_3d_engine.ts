@@ -6,6 +6,11 @@
  * - Composite 3-12 part 3D Toy Characters with grounded contact shadows
  * - InstancedMesh meadow flowers (>40 instances) + Zero-GC pooled 3D particle ring buffer
  * - Full multi-touch & mouse raycasting + swipe trail impulses + Score Mode star spawning
+ * - Toddler-safe Light Challenges (Mode Balita vs Mode Bayi):
+ *   1. Stage agility & size scaling (never below 70%)
+ *   2. Shy Peek-a-Boo Object behind 3D bushes & clouds (+30 pts)
+ *   3. Playful Boing Obstacle from Stage 2 (max 1, soft boing, 1s combo pause, 0 penalty)
+ *   4. Visual Mini-Missions (+60 pts & +1 golden star, 45s silent rotation)
  */
 
 import * as THREE from 'three';
@@ -18,17 +23,29 @@ import {
   build3DToyCharacter,
   build3DTree,
   build3DRainbowLandmark,
+  build3DHidingCover,
+  build3DShyPeekCharacter,
+  build3DPlayfulObstacle,
 } from './models_3d';
 import { babySound } from './sound';
 import {
+  CHALLENGE_CONFIG,
   GamePlayMode,
+  AgeMode,
   ScoreState,
   StageCelebrationMeta,
   createInitialScoreState,
   registerScoreHit,
+  registerShyObjectHit,
+  registerObstacleBoing,
+  setScoreAgeMode,
   tickComboTimer,
   advanceScoreTarget,
   getStageCelebrationMeta,
+  getStageSpeedMultiplier,
+  getStageScaleMultiplier,
+  getShyObjectVisibleDuration,
+  shouldHavePlayfulObstacle,
 } from './score_rules';
 
 // Pre-allocated scratch math objects (Zero GC inside requestAnimationFrame)
@@ -74,6 +91,38 @@ interface ToyActor3D {
   lastHitTime: number;
 }
 
+interface ShyPeekActor3D {
+  group: THREE.Group;
+  covers: Array<{ group: THREE.Group; x: number; y: number; z: number; kind: 'bush' | 'cloud' }>;
+  activeCoverIndex: number;
+  state: 'cooldown' | 'peeking' | 'celebrating';
+  timer: number;
+  x: number;
+  y: number;
+  z: number;
+  hiddenY: number;
+  peekY: number;
+  scale: number;
+  rotY: number;
+}
+
+interface PlayfulObstacleActor3D {
+  active: boolean;
+  group: THREE.Group;
+  shadowMesh: THREE.Mesh;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  bobPhase: number;
+  wobbleTimer: number;
+  scaleX: number;
+  scaleY: number;
+  scaleVx: number;
+  scaleVy: number;
+  lastBoingTime: number;
+}
+
 interface PooledParticle3D {
   active: boolean;
   x: number;
@@ -110,6 +159,9 @@ export class ToddlerWorld3DEngine {
   private toys: ToyActor3D[] = [];
   private nextToyId = 1;
   private maxToys = 12;
+
+  private shyActor!: ShyPeekActor3D;
+  private obstacleActor!: PlayfulObstacleActor3D;
 
   private particleCapacity = 120;
   private particleMesh!: THREE.InstancedMesh;
@@ -151,7 +203,11 @@ export class ToddlerWorld3DEngine {
     this.onScoreChange = onScoreChange;
 
     const savedBest = this.loadBestScore();
-    this.scoreState = createInitialScoreState(savedBest, 200);
+    this.scoreState = createInitialScoreState(
+      savedBest,
+      200,
+      CHALLENGE_CONFIG.DEFAULT_AGE_MODE
+    );
 
     this.isHeadless =
       typeof navigator !== 'undefined' &&
@@ -192,12 +248,14 @@ export class ToddlerWorld3DEngine {
     this.camera.position.copy(this.camCurrentPos);
     this.camera.lookAt(this.camLookAt);
 
-    // 4. Build Lighting, Ground, Landmarks, Instanced Flowers & Particle Pool
+    // 4. Build Lighting, Ground, Landmarks, Challenge Actors & Particle Pool
     this.setupLighting();
     this.setupEnvironmentMesh();
+    this.setupChallengeActors();
     this.setupParticlePool();
     this.applyThemeVisuals();
     this.spawnInitialToys();
+    this.syncChallengeActorsForState();
 
     // Pre-warm shaders once
     if (!this.isHeadless) {
@@ -348,6 +406,113 @@ export class ToddlerWorld3DEngine {
     this.scene.add(this.flowerInstancedMesh);
   }
 
+  /**
+   * Initializes the Shy Peek-a-Boo Character + Hiding Bushes/Cloud and the Playful Boing Obstacle.
+   */
+  private setupChallengeActors() {
+    // 1. Hiding spots (2 foreground bushes + 1 sky cloud) for Shy Peek-a-Boo Object
+    const coverDefs: Array<{ x: number; y: number; z: number; kind: 'bush' | 'cloud' }> = [
+      { x: -3.7, y: 0.0, z: 1.0, kind: 'bush' },
+      { x: 3.7, y: 0.0, z: 1.0, kind: 'bush' },
+      { x: -2.4, y: 2.35, z: -0.9, kind: 'cloud' },
+    ];
+    const covers = coverDefs.map((c) => {
+      const g = build3DHidingCover(c.kind);
+      g.position.set(c.x, c.y, c.z);
+      this.scene.add(g);
+      return { group: g, ...c };
+    });
+
+    const shyGroup = build3DShyPeekCharacter();
+    shyGroup.position.set(covers[0].x, covers[0].y + 0.55, covers[0].z - 0.15);
+    this.scene.add(shyGroup);
+
+    // Start peeking right away in Mode Balita so children see the friendly peek-a-boo buddy!
+    this.shyActor = {
+      group: shyGroup,
+      covers,
+      activeCoverIndex: 0,
+      state: 'peeking',
+      timer: getShyObjectVisibleDuration(1),
+      x: covers[0].x,
+      y: covers[0].y + 0.58,
+      z: covers[0].z - 0.15,
+      hiddenY: covers[0].y - 0.5,
+      peekY: covers[0].y + 0.58,
+      scale: 0.92,
+      rotY: 0.18,
+    };
+
+    // 2. Playful Boing Obstacle (Awan Jahil) — max 1 on screen, active from Stage 2 in Mode Balita
+    const obsGroup = build3DPlayfulObstacle('cloud');
+    obsGroup.position.set(0, 1.65, 0.65);
+    obsGroup.visible = false;
+    this.scene.add(obsGroup);
+
+    const obsShadowGeo = new THREE.PlaneGeometry(1.5, 1.5);
+    const obsShadowMat = new THREE.MeshBasicMaterial({
+      map: this.contactShadowTex,
+      transparent: true,
+      depthWrite: false,
+      opacity: 0.4,
+    });
+    const obsShadow = new THREE.Mesh(obsShadowGeo, obsShadowMat);
+    obsShadow.rotation.x = -Math.PI / 2;
+    obsShadow.position.set(0, 0.026, 0.65);
+    obsShadow.visible = false;
+    this.scene.add(obsShadow);
+
+    this.obstacleActor = {
+      active: false,
+      group: obsGroup,
+      shadowMesh: obsShadow,
+      x: 0,
+      y: 1.65,
+      z: 0.65,
+      vx: 1.25,
+      bobPhase: 0,
+      wobbleTimer: 0,
+      scaleX: 1.0,
+      scaleY: 1.0,
+      scaleVx: 0,
+      scaleVy: 0,
+      lastBoingTime: 0,
+    };
+  }
+
+  private syncChallengeActorsForState() {
+    const isBalita = this.scoreState.ageMode === 'balita';
+
+    // Update target scale of all existing toys based on stage & ageMode
+    const targetScale = getStageScaleMultiplier(
+      this.scoreState.stage,
+      this.scoreState.ageMode
+    );
+    for (const toy of this.toys) {
+      toy.targetScale = targetScale;
+    }
+
+    // Shy Peek-a-Boo actor & covers visibility
+    this.shyActor.covers.forEach((c) => {
+      c.group.visible = isBalita;
+    });
+    if (!isBalita) {
+      this.shyActor.group.visible = false;
+    } else {
+      this.shyActor.group.visible = true;
+    }
+
+    // Playful Obstacle visibility (Stage >= 2 in Mode Balita, max 1 on screen)
+    const wantObstacle = shouldHavePlayfulObstacle(
+      this.scoreState.stage,
+      this.scoreState.ageMode,
+      0
+    );
+    this.obstacleActor.active = wantObstacle;
+    this.obstacleActor.group.visible = wantObstacle;
+    this.obstacleActor.shadowMesh.visible = wantObstacle;
+  }
+
   private setupParticlePool() {
     const pGeo = new THREE.OctahedronGeometry(0.16, 1);
     const pMat = new THREE.MeshStandardMaterial({
@@ -422,6 +587,16 @@ export class ToddlerWorld3DEngine {
 
   /* ---------------- Public Controls & State Sync ---------------- */
 
+  public setAgeMode(ageMode: AgeMode) {
+    this.scoreState = setScoreAgeMode(this.scoreState, ageMode);
+    this.syncChallengeActorsForState();
+    this.emitScoreUpdate();
+  }
+
+  public getAgeMode(): AgeMode {
+    return this.scoreState.ageMode;
+  }
+
   public setTheme(themeId: string) {
     if (THEMES[themeId]) {
       this.theme = THEMES[themeId];
@@ -434,7 +609,6 @@ export class ToddlerWorld3DEngine {
   public setPlayMode(mode: GamePlayMode) {
     this.playMode = mode;
     if (mode === 'score') {
-      // Ensure at least 2 golden stars are present in Score Mode
       this.spawnToy3D((Math.random() - 0.5) * 4, 1.2, (Math.random() - 0.5) * 2, 'star');
       this.spawnToy3D((Math.random() - 0.5) * 4, 1.5, (Math.random() - 0.5) * 2, 'star');
       this.emitScoreUpdate();
@@ -450,7 +624,11 @@ export class ToddlerWorld3DEngine {
   }
 
   public resetScoreRun(): StageCelebrationMeta {
-    this.scoreState = createInitialScoreState(this.scoreState.bestScore, 200);
+    this.scoreState = createInitialScoreState(
+      this.scoreState.bestScore,
+      200,
+      this.scoreState.ageMode
+    );
     const meta = getStageCelebrationMeta(this.scoreState.stage);
     if (THEMES[meta.themeId]) {
       this.theme = THEMES[meta.themeId];
@@ -459,6 +637,7 @@ export class ToddlerWorld3DEngine {
     this.camCurrentPos.set(0, 6.2, 12.2);
     this.clearAllToys(false);
     this.spawnInitialToys();
+    this.syncChallengeActorsForState();
     this.emitScoreUpdate();
     return meta;
   }
@@ -474,6 +653,8 @@ export class ToddlerWorld3DEngine {
     this.camCurrentPos.set(0, 6.4, 12.4);
     this.clearAllToys(false);
     this.spawnInitialToys();
+    this.syncChallengeActorsForState();
+
     // Spawn bonus celebration stars in a cheerful arc
     for (let i = 0; i < 4; i++) {
       const starX = (i - 1.5) * 2.1;
@@ -543,6 +724,14 @@ export class ToddlerWorld3DEngine {
   /* ---------------- Spawning & 3D Toy Management ---------------- */
 
   private pickRandomCharacterType(): CharacterType {
+    // Prioritize spawning the active Mini-Mission target type so toddler can easily complete it
+    if (this.playMode === 'score' && this.scoreState.activeMission) {
+      const targetType = this.scoreState.activeMission.targetType;
+      const existingCount = this.toys.filter((t) => t.type === targetType).length;
+      if (existingCount < 2 || Math.random() < 0.45) {
+        return targetType;
+      }
+    }
     const pool = this.theme.entityTypes;
     if (this.playMode === 'score' && Math.random() < 0.42) {
       return 'star';
@@ -557,12 +746,12 @@ export class ToddlerWorld3DEngine {
 
   private spawnInitialToys() {
     const positions = [
-      { x: -3.2, y: 0.2, z: 0.4, type: 'kitten' as CharacterType },
-      { x: -1.1, y: 0.3, z: -0.8, type: 'star' as CharacterType },
-      { x: 1.2, y: 0.2, z: 0.5, type: 'chick' as CharacterType },
-      { x: 3.1, y: 0.2, z: -0.5, type: 'bunny' as CharacterType },
-      { x: 0.0, y: 1.5, z: -1.6, type: 'balloon' as CharacterType },
-      { x: -2.2, y: 1.2, z: -1.4, type: 'bear' as CharacterType },
+      { x: -2.8, y: 0.2, z: 0.3, type: 'kitten' as CharacterType },
+      { x: -1.1, y: 0.8, z: -0.6, type: 'star' as CharacterType },
+      { x: 1.1, y: 0.2, z: 0.4, type: 'chick' as CharacterType },
+      { x: 2.8, y: 0.2, z: -0.4, type: 'bunny' as CharacterType },
+      { x: 0.0, y: 1.5, z: -1.3, type: 'balloon' as CharacterType },
+      { x: -1.9, y: 1.1, z: -1.1, type: 'star' as CharacterType },
     ];
 
     positions.forEach((p) => {
@@ -592,11 +781,20 @@ export class ToddlerWorld3DEngine {
     const baseY = type === 'balloon' || type === 'star' ? 0.55 + Math.random() * 0.9 : 0.02;
     const spawnY = Math.max(baseY, y);
 
+    const stageScale = getStageScaleMultiplier(
+      this.scoreState.stage,
+      this.scoreState.ageMode
+    );
+    const speedMult = getStageSpeedMultiplier(
+      this.scoreState.stage,
+      this.scoreState.ageMode
+    );
+
     group.position.set(x, spawnY, z);
     group.scale.setScalar(0.25);
     this.scene.add(group);
 
-    // Soft radial contact shadow plane directly beneath the 3D toy (y = 0.025 prevents Z-fighting)
+    // Soft radial contact shadow plane directly beneath the 3D toy
     const shadowGeo = new THREE.PlaneGeometry(1.45, 1.45);
     const shadowMat = new THREE.MeshBasicMaterial({
       map: this.contactShadowTex,
@@ -618,16 +816,16 @@ export class ToddlerWorld3DEngine {
       y: spawnY,
       z,
       baseY,
-      vx: (Math.random() - 0.5) * 1.4,
-      vy: 2.2 + Math.random() * 1.2,
-      vz: (Math.random() - 0.5) * 0.8,
+      vx: (Math.random() - 0.5) * 1.4 * speedMult,
+      vy: (2.0 + Math.random() * 1.1) * speedMult,
+      vz: (Math.random() - 0.5) * 0.8 * speedMult,
       rotY: (Math.random() - 0.5) * 0.5,
       vRotY: (Math.random() - 0.5) * 1.5,
       scaleX: 0.3,
       scaleY: 0.3,
       scaleVx: 0,
       scaleVy: 0,
-      targetScale: 1.0,
+      targetScale: stageScale,
       bobPhase: Math.random() * Math.PI * 2,
       colorHex,
       lastHitTime: 0,
@@ -657,7 +855,6 @@ export class ToddlerWorld3DEngine {
     } else {
       out.set(_ndc.x * 4.5, Math.max(0.2, (_ndc.y + 0.5) * 2.5), 0);
     }
-    // Clamp into visible 3D play arena
     out.x = THREE.MathUtils.clamp(out.x, -5.2, 5.2);
     out.y = THREE.MathUtils.clamp(out.y, 0.1, 3.6);
     out.z = THREE.MathUtils.clamp(out.z, -2.5, 2.2);
@@ -671,6 +868,44 @@ export class ToddlerWorld3DEngine {
       x: ((_vec3.x + 1) * 0.5) * rect.width,
       y: ((-_vec3.y + 1) * 0.5) * rect.height,
     };
+  }
+
+  /**
+   * Checks if pointer hit the Shy Peek-a-Boo Object while it is peeking out.
+   */
+  private checkHitShyActor(clientX: number, clientY: number, slopPx = 78): boolean {
+    if (
+      this.scoreState.ageMode !== 'balita' ||
+      this.shyActor.state !== 'peeking' ||
+      !this.shyActor.group.visible
+    ) {
+      return false;
+    }
+    const screenPos = this.projectWorldToScreen(
+      this.shyActor.x,
+      this.shyActor.y + 0.65,
+      this.shyActor.z
+    );
+    return Math.hypot(clientX - screenPos.x, clientY - screenPos.y) < slopPx;
+  }
+
+  /**
+   * Checks if pointer hit the Playful Obstacle (Awan Jahil) in Stage 2+.
+   */
+  private checkHitPlayfulObstacle(clientX: number, clientY: number, slopPx = 76): boolean {
+    if (!this.obstacleActor.active || !this.obstacleActor.group.visible) {
+      return false;
+    }
+    const now = performance.now();
+    if (now - this.obstacleActor.lastBoingTime < 350) {
+      return false;
+    }
+    const screenPos = this.projectWorldToScreen(
+      this.obstacleActor.x,
+      this.obstacleActor.y + 0.7,
+      this.obstacleActor.z
+    );
+    return Math.hypot(clientX - screenPos.x, clientY - screenPos.y) < slopPx;
   }
 
   /**
@@ -703,6 +938,19 @@ export class ToddlerWorld3DEngine {
       lastTime: performance.now(),
     });
 
+    // 1. Check Shy Peek-a-Boo Object (+30 points & happy celebration)
+    if (this.checkHitShyActor(clientX, clientY, 84)) {
+      this.triggerShyActorCaught();
+      return;
+    }
+
+    // 2. Check Playful Boing Obstacle (Stage 2+, gentle boing, 1s combo pause, 0 penalty)
+    if (this.checkHitPlayfulObstacle(clientX, clientY, 80)) {
+      this.triggerObstacleBoing();
+      return;
+    }
+
+    // 3. Check 3D Toys
     const hitToy = this.findHitToyAtScreen(clientX, clientY, 82);
     if (hitToy) {
       this.interactWithToy(hitToy, false);
@@ -718,7 +966,6 @@ export class ToddlerWorld3DEngine {
         this.theme.soundMode
       );
 
-      // Even tapping empty space gives +10 positive sensory score feedback in Score Mode!
       if (this.playMode === 'score') {
         this.awardPointsForAction(newToy.type, clientX, clientY, false, newToy.colorHex);
       }
@@ -742,12 +989,20 @@ export class ToddlerWorld3DEngine {
       // Emit 3D sparkling trail particles along swipe path
       this.burstParticles3D(worldPt.x, worldPt.y + 0.4, worldPt.z + 0.4, 3, this.pickRandomColor());
 
-      // Check if swipe brushed across any 3D toy
-      const brushedToy = this.findHitToyAtScreen(clientX, clientY, 72);
-      if (brushedToy && now - brushedToy.lastHitTime > 260) {
-        brushedToy.vx += THREE.MathUtils.clamp(dx * 0.04, -5, 5);
-        brushedToy.vy = Math.max(brushedToy.vy, 3.2);
-        this.interactWithToy(brushedToy, true);
+      // Check if swipe caught the Shy Peek-a-Boo Object
+      if (this.checkHitShyActor(clientX, clientY, 82)) {
+        this.triggerShyActorCaught();
+      } else if (this.checkHitPlayfulObstacle(clientX, clientY, 74)) {
+        // Check if swipe brushed the Playful Boing Obstacle
+        this.triggerObstacleBoing();
+      } else {
+        // Check if swipe brushed across any 3D toy
+        const brushedToy = this.findHitToyAtScreen(clientX, clientY, 72);
+        if (brushedToy && now - brushedToy.lastHitTime > 260) {
+          brushedToy.vx += THREE.MathUtils.clamp(dx * 0.04, -5, 5);
+          brushedToy.vy = Math.max(brushedToy.vy, 3.2);
+          this.interactWithToy(brushedToy, true);
+        }
       }
 
       const speedPx = (distPx / dtMs) * 1000;
@@ -773,13 +1028,98 @@ export class ToddlerWorld3DEngine {
     this.activePointers.delete(id);
   }
 
+  /**
+   * Triggered when the toddler swipes/taps the Shy Peek-a-Boo Object while visible:
+   * Awards +30 points, happy jump & spin animation, and cheerful giggle chime.
+   */
+  public triggerShyActorCaught() {
+    if (this.shyActor.state !== 'peeking') return;
+
+    this.shyActor.state = 'celebrating';
+    this.shyActor.timer = 0.85;
+    this.burstParticles3D(
+      this.shyActor.x,
+      this.shyActor.y + 0.9,
+      this.shyActor.z,
+      22,
+      '#F472B6'
+    );
+    babySound.playPeekABooGiggle();
+
+    if (this.playMode === 'score') {
+      const res = registerShyObjectHit(this.scoreState);
+      this.scoreState = res.nextState;
+      this.saveBestScore(this.scoreState.bestScore);
+
+      const screenPos = this.projectWorldToScreen(
+        this.shyActor.x,
+        this.shyActor.y + 1.2,
+        this.shyActor.z
+      );
+      const popup: FloatingScorePopup = {
+        id: this.popupCounter++,
+        text: `+${res.pointsAwarded} Cilukba! 🌟`,
+        x: screenPos.x,
+        y: screenPos.y,
+        color: '#F472B6',
+      };
+
+      if (res.milestoneReached) {
+        this.cameraTrauma = 0.25;
+        babySound.playVictoryFanfare();
+      }
+      this.emitScoreUpdate(popup);
+    }
+  }
+
+  /**
+   * Triggered when the toddler touches/swipes the Playful Obstacle (Awan Jahil):
+   * Plays soft "boing!", wobbles elastically, pauses combo for 1s, 0 points lost, combo never drops.
+   */
+  public triggerObstacleBoing() {
+    this.obstacleActor.lastBoingTime = performance.now();
+    this.obstacleActor.wobbleTimer = 0.9;
+    this.obstacleActor.scaleX = 1.48;
+    this.obstacleActor.scaleY = 0.62;
+    this.obstacleActor.vx = -this.obstacleActor.vx;
+
+    this.burstParticles3D(
+      this.obstacleActor.x,
+      this.obstacleActor.y + 0.8,
+      this.obstacleActor.z,
+      14,
+      '#C4B5FD'
+    );
+    babySound.playGentleBoing();
+
+    if (this.playMode === 'score') {
+      this.scoreState = registerObstacleBoing(this.scoreState);
+      const screenPos = this.projectWorldToScreen(
+        this.obstacleActor.x,
+        this.obstacleActor.y + 1.15,
+        this.obstacleActor.z
+      );
+      const popup: FloatingScorePopup = {
+        id: this.popupCounter++,
+        text: 'Boing! ☁️',
+        x: screenPos.x,
+        y: screenPos.y,
+        color: '#C4B5FD',
+      };
+      this.emitScoreUpdate(popup);
+    }
+  }
+
   private interactWithToy(toy: ToyActor3D, isSwipe: boolean) {
     toy.lastHitTime = performance.now();
-    // Joyful jump + squash-and-stretch + spin
-    toy.vy = 4.2 + Math.random() * 1.5;
-    toy.vx += (Math.random() - 0.5) * 2.5;
-    toy.scaleX = 1.42;
-    toy.scaleY = 0.62;
+    const speedMult = getStageSpeedMultiplier(
+      this.scoreState.stage,
+      this.scoreState.ageMode
+    );
+    toy.vy = (4.0 + Math.random() * 1.4) * Math.min(1.25, speedMult);
+    toy.vx += (Math.random() - 0.5) * 2.5 * speedMult;
+    toy.scaleX = toy.targetScale * 1.38;
+    toy.scaleY = toy.targetScale * 0.64;
     toy.vRotY = (Math.random() > 0.5 ? 1 : -1) * 7.5;
 
     this.burstParticles3D(toy.x, toy.y + 0.8, toy.z, 18, toy.colorHex);
@@ -788,7 +1128,6 @@ export class ToddlerWorld3DEngine {
 
     if (this.playMode === 'score') {
       this.awardPointsForAction(toy.type, screenPos.x, screenPos.y, isSwipe, toy.colorHex);
-      // If it was a golden star, morph it to a fresh color/position after a happy bounce
       if (toy.type === 'star') {
         babySound.playStarCollect(this.scoreState.combo);
       } else {
@@ -810,19 +1149,29 @@ export class ToddlerWorld3DEngine {
     this.scoreState = result.nextState;
     this.saveBestScore(this.scoreState.bestScore);
 
+    let popupText =
+      this.scoreState.combo > 1
+        ? `+${result.pointsAwarded} (x${this.scoreState.combo}!)`
+        : `+${result.pointsAwarded}`;
+
+    if (result.missionCompleted) {
+      popupText = `+${result.pointsAwarded} 🌟 Misi Selesai!`;
+      babySound.playMissionCompleteFanfare();
+      // Spawn a celebratory golden star in the center of the playfield
+      this.spawnToy3D(0, 1.8, 0.2, 'star');
+      this.burstParticles3D(0, 2.0, 0.2, 24, '#FACC15');
+    }
+
     const popup: FloatingScorePopup = {
       id: this.popupCounter++,
-      text:
-        this.scoreState.combo > 1
-          ? `+${result.pointsAwarded} (x${this.scoreState.combo}!)`
-          : `+${result.pointsAwarded}`,
+      text: popupText,
       x: screenX,
       y: screenY,
       color: colorHex,
     };
 
     if (result.milestoneReached) {
-      this.cameraTrauma = 0.35;
+      this.cameraTrauma = 0.28;
       babySound.playVictoryFanfare();
     }
 
@@ -894,40 +1243,76 @@ export class ToddlerWorld3DEngine {
   };
 
   private update(dt: number, now: number) {
-    // 1. Tick Score Mode Combo Timer & Periodic Star Spawner
+    const speedMult = getStageSpeedMultiplier(
+      this.scoreState.stage,
+      this.scoreState.ageMode
+    );
+    const stageScale = getStageScaleMultiplier(
+      this.scoreState.stage,
+      this.scoreState.ageMode
+    );
+
+    // 1. Tick Score Mode Combo Timer, 1s Obstacle Pause, 45s Mission Rotation & Spawner
     if (this.playMode === 'score') {
       const prevCombo = this.scoreState.combo;
+      const prevPause = this.scoreState.comboPauseTimer > 0;
+      const prevMissionId = this.scoreState.activeMission?.id;
+
       this.scoreState = tickComboTimer(this.scoreState, dt);
-      if (this.scoreState.combo !== prevCombo) {
+
+      const nowPause = this.scoreState.comboPauseTimer > 0;
+      const nowMissionId = this.scoreState.activeMission?.id;
+      if (
+        this.scoreState.combo !== prevCombo ||
+        prevPause !== nowPause ||
+        prevMissionId !== nowMissionId
+      ) {
         this.emitScoreUpdate();
       }
 
       this.starSpawnTimer += dt;
-      if (this.starSpawnTimer > 3.8) {
+      if (this.starSpawnTimer > 3.4) {
         this.starSpawnTimer = 0;
-        const starCount = this.toys.filter((t) => t.type === 'star').length;
-        if (starCount < 3) {
-          this.spawnToy3D((Math.random() - 0.5) * 6.5, 1.2 + Math.random() * 1.2, (Math.random() - 0.5) * 2, 'star');
+        const targetType = this.scoreState.activeMission?.targetType || 'star';
+        const matchCount = this.toys.filter((t) => t.type === targetType).length;
+        if (matchCount < 2) {
+          this.spawnToy3D(
+            (Math.random() - 0.5) * 6.0,
+            1.2 + Math.random() * 1.1,
+            (Math.random() - 0.5) * 1.8,
+            targetType
+          );
         }
       }
     }
 
-    // 2. Smooth Damped Camera Movement
+    // 2. Update Shy Peek-a-Boo Actor (Mode Balita only)
+    if (this.scoreState.ageMode === 'balita') {
+      this.updateShyActor(dt, now);
+    }
+
+    // 3. Update Playful Boing Obstacle (Mode Balita, Stage >= 2, max 1)
+    if (this.obstacleActor.active) {
+      this.updatePlayfulObstacle(dt, speedMult);
+    }
+
+    // 4. Smooth Damped Camera Movement
     const dampFactor = 1 - Math.exp(-5.5 * dt);
     this.camCurrentPos.lerp(this.camTargetPos, dampFactor);
     this.camera.position.copy(this.camCurrentPos);
 
     if (this.cameraTrauma > 0) {
       this.cameraTrauma = Math.max(0, this.cameraTrauma - dt * 1.2);
-      const shake = this.cameraTrauma * this.cameraTrauma * 0.25;
-      this.camera.position.x += Math.sin(now * 0.04) * shake;
-      this.camera.position.y += Math.cos(now * 0.05) * shake;
+      const shake = this.cameraTrauma * this.cameraTrauma * 0.22;
+      this.camera.position.x += Math.sin(now * 0.03) * shake;
+      this.camera.position.y += Math.cos(now * 0.04) * shake;
     }
     this.camera.lookAt(this.camLookAt);
 
-    // 3. Update 3D Toy Actors (Physics, Springs, Ground Bounce, Contact Shadow)
+    // 5. Update 3D Toy Actors (Physics, Stage Speed & Scale Multipliers, Contact Shadow)
     for (const toy of this.toys) {
-      // Spring squash-and-stretch
+      toy.targetScale = stageScale;
+
       const sx = updateSpring(toy.scaleX, toy.scaleVx, toy.targetScale, 180, 13, dt);
       toy.scaleX = sx.value;
       toy.scaleVx = sx.velocity;
@@ -936,20 +1321,22 @@ export class ToddlerWorld3DEngine {
       toy.scaleY = sy.value;
       toy.scaleVy = sy.velocity;
 
-      // Gentle gravity & buoyant bobbing
-      toy.bobPhase += dt * 2.4;
-      const isFloater = toy.type === 'balloon' || toy.type === 'star' || toy.type === 'contrast_star';
+      // Gentle gravity & buoyant bobbing scaled by stage speedMult
+      toy.bobPhase += dt * 2.2 * speedMult;
+      const isFloater =
+        toy.type === 'balloon' || toy.type === 'star' || toy.type === 'contrast_star';
 
       if (isFloater) {
         const targetHoverY = toy.baseY + Math.sin(toy.bobPhase) * 0.28;
         toy.vy += (targetHoverY - toy.y) * 6.5 * dt;
         toy.vy *= Math.pow(0.92, dt * 60);
       } else {
-        // Gravity towards meadow ground
         toy.vy -= 9.8 * dt;
       }
 
-      // Integrate 3D position
+      // Gentle horizontal agility drift in Mode Balita
+      toy.vx += Math.cos(toy.bobPhase * 0.65) * 0.45 * speedMult * dt;
+
       toy.x += toy.vx * dt;
       toy.y += toy.vy * dt;
       toy.z += toy.vz * dt;
@@ -960,8 +1347,8 @@ export class ToddlerWorld3DEngine {
         toy.y = floorY;
         if (toy.vy < -1.2) {
           toy.vy = -toy.vy * 0.58;
-          toy.scaleX = 1.28;
-          toy.scaleY = 0.74;
+          toy.scaleX = toy.targetScale * 1.25;
+          toy.scaleY = toy.targetScale * 0.76;
         } else {
           toy.vy = 0;
         }
@@ -977,13 +1364,13 @@ export class ToddlerWorld3DEngine {
       if (toy.x < -5.2) {
         toy.x = -5.2;
         toy.vx = Math.abs(toy.vx) * 0.8;
-        toy.scaleX = 0.78;
-        toy.scaleY = 1.22;
+        toy.scaleX = toy.targetScale * 0.8;
+        toy.scaleY = toy.targetScale * 1.2;
       } else if (toy.x > 5.2) {
         toy.x = 5.2;
         toy.vx = -Math.abs(toy.vx) * 0.8;
-        toy.scaleX = 0.78;
-        toy.scaleY = 1.22;
+        toy.scaleX = toy.targetScale * 0.8;
+        toy.scaleY = toy.targetScale * 1.2;
       }
 
       if (toy.z < -2.4) {
@@ -1009,12 +1396,13 @@ export class ToddlerWorld3DEngine {
 
       // Update grounded contact shadow directly beneath actor
       const heightAboveGround = Math.max(0, toy.y);
-      const shadowScale = THREE.MathUtils.clamp(1.1 - heightAboveGround * 0.22, 0.35, 1.15);
+      const shadowScale =
+        THREE.MathUtils.clamp(1.1 - heightAboveGround * 0.22, 0.35, 1.15) * stageScale;
       toy.shadowMesh.position.set(toy.x, 0.025, toy.z);
       toy.shadowMesh.scale.setScalar(shadowScale);
     }
 
-    // 4. Update Pooled 3D Particles in-place
+    // 6. Update Pooled 3D Particles in-place
     let anyParticleUpdated = false;
     for (let i = 0; i < this.particleCapacity; i++) {
       const p = this.particlePool[i];
@@ -1048,5 +1436,105 @@ export class ToddlerWorld3DEngine {
     if (anyParticleUpdated) {
       this.particleMesh.instanceMatrix.needsUpdate = true;
     }
+  }
+
+  /**
+   * Updates the Shy Peek-a-Boo Actor (Objek Malu-Malu) state machine:
+   * Peeks from behind a bush or cloud for 3.0s (Stage 1-2) or 2.5s (Stage 3-4),
+   * and gently hides back if missed with zero penalty.
+   */
+  private updateShyActor(dt: number, now: number) {
+    const s = this.shyActor;
+    s.timer -= dt;
+
+    if (s.state === 'peeking') {
+      // Smoothly rise up to peekY and wave gently
+      s.y += (s.peekY - s.y) * Math.min(1, dt * 8);
+      s.rotY = Math.sin(now * 0.005) * 0.28;
+      s.group.visible = true;
+      s.group.position.set(s.x, s.y, s.z);
+      s.group.rotation.set(0, s.rotY, Math.sin(now * 0.007) * 0.1);
+      s.group.scale.setScalar(0.92);
+
+      // If time is up and not swiped, quietly hide back behind the bush/cloud (zero penalty!)
+      if (s.timer <= 0) {
+        s.state = 'cooldown';
+        s.timer = CHALLENGE_CONFIG.SHY_RESPAWN_COOLDOWN_SEC;
+      }
+    } else if (s.state === 'celebrating') {
+      // Joyful jump & spin after being swiped (+30 points!)
+      s.y += 2.6 * dt;
+      s.rotY += 9.5 * dt;
+      s.group.position.set(s.x, s.y, s.z);
+      s.group.rotation.set(0, s.rotY, 0);
+      s.group.scale.setScalar(1.12);
+
+      if (s.timer <= 0) {
+        s.state = 'cooldown';
+        s.timer = CHALLENGE_CONFIG.SHY_RESPAWN_COOLDOWN_SEC * 0.75;
+      }
+    } else {
+      // 'cooldown': slide softly behind the bush/cloud
+      s.y += (s.hiddenY - s.y) * Math.min(1, dt * 7);
+      s.group.position.set(s.x, s.y, s.z);
+      s.group.scale.setScalar(0.45);
+      if (Math.abs(s.y - s.hiddenY) < 0.08) {
+        s.group.visible = false;
+      }
+
+      if (s.timer <= 0) {
+        // Pick next cover spot to peek out from
+        s.activeCoverIndex = (s.activeCoverIndex + 1) % s.covers.length;
+        const cov = s.covers[s.activeCoverIndex];
+        s.x = cov.x;
+        s.z = cov.z - 0.15;
+        s.hiddenY = cov.y - 0.35;
+        s.peekY = cov.y + 0.58;
+        s.y = s.hiddenY;
+        s.state = 'peeking';
+        s.timer = getShyObjectVisibleDuration(this.scoreState.stage);
+        s.group.visible = true;
+      }
+    }
+  }
+
+  /**
+   * Updates the Playful Boing Obstacle (Awan Jahil) in Stage 2+ (Mode Balita).
+   */
+  private updatePlayfulObstacle(dt: number, speedMult: number) {
+    const obs = this.obstacleActor;
+    obs.bobPhase += dt * 2.2;
+
+    obs.x += obs.vx * speedMult * dt;
+    if (obs.x > 3.4) {
+      obs.x = 3.4;
+      obs.vx = -Math.abs(obs.vx);
+    } else if (obs.x < -3.4) {
+      obs.x = -3.4;
+      obs.vx = Math.abs(obs.vx);
+    }
+
+    obs.y = 1.65 + Math.sin(obs.bobPhase) * 0.25;
+
+    // Elastic squash-and-stretch spring for funny wobble when touched
+    const sx = updateSpring(obs.scaleX, obs.scaleVx, 1.0, 210, 10, dt);
+    obs.scaleX = sx.value;
+    obs.scaleVx = sx.velocity;
+
+    const sy = updateSpring(obs.scaleY, obs.scaleVy, 1.0, 210, 10, dt);
+    obs.scaleY = sy.value;
+    obs.scaleVy = sy.velocity;
+
+    let wobbleRotZ = Math.sin(obs.bobPhase * 0.7) * 0.08;
+    if (obs.wobbleTimer > 0) {
+      obs.wobbleTimer = Math.max(0, obs.wobbleTimer - dt);
+      wobbleRotZ = Math.sin(obs.wobbleTimer * 28) * 0.32;
+    }
+
+    obs.group.position.set(obs.x, obs.y, obs.z);
+    obs.group.rotation.set(0, 0, wobbleRotZ);
+    obs.group.scale.set(obs.scaleX, obs.scaleY, obs.scaleX);
+
+    obs.shadowMesh.position.set(obs.x, 0.026, obs.z);
   }
 }

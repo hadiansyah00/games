@@ -10,6 +10,7 @@ import {
   FloatingScorePopup,
 } from './game/world_3d_engine';
 import {
+  AgeMode,
   GamePlayMode,
   ScoreState,
   StageCelebrationMeta,
@@ -24,6 +25,10 @@ import { babySound } from './game/sound';
 import { TitleScreen } from './components/TitleScreen';
 import { ParentModal } from './components/ParentModal';
 import { StageTransitionCurtain } from './components/StageTransitionCurtain';
+import {
+  MiniMissionBadge,
+  AgeModeHoldButton,
+} from './components/ChallengeHudWidgets';
 import {
   Settings,
   Volume2,
@@ -73,10 +78,11 @@ export default function App() {
     getStageCelebrationMeta(1)
   );
 
-  // Mirror state to document.body.dataset.state
+  // Mirror state and ageMode to document.body.dataset
   useEffect(() => {
     document.body.dataset.state = gameState;
-  }, [gameState]);
+    document.body.dataset.ageMode = scoreState.ageMode;
+  }, [gameState, scoreState.ageMode]);
 
   // Mount Three.js 3D Engine once in isolated container
   useEffect(() => {
@@ -106,6 +112,9 @@ export default function App() {
     engineRef.current = engine;
     setScoreState(engine.getScoreState());
     engine.start();
+
+    // Expose safe deterministic test helper on window for automated Playwright verification
+    (window as unknown as Record<string, unknown>).__toddlerGameEngine = engine;
 
     const handleResize = () => {
       engine.handleResize();
@@ -251,6 +260,11 @@ export default function App() {
     engineRef.current?.setPlayMode(mode);
   }, []);
 
+  // Select Age Mode ('balita' vs 'bayi')
+  const handleSelectAgeMode = useCallback((nextAgeMode: AgeMode) => {
+    engineRef.current?.setAgeMode(nextAgeMode);
+  }, []);
+
   // Select Theme
   const handleSelectTheme = useCallback((themeId: string) => {
     setCurrentThemeId(themeId);
@@ -382,98 +396,113 @@ export default function App() {
         />
       )}
 
-      {/* Active Gameplay HUD (Top-Left Score Cluster + Collapsible Bottom Dock) */}
+      {/* Active Gameplay HUD (Top-Left Score + Visual Mini-Mission + Top-Right 2s Hold Age Mode + Bottom Dock) */}
       {gameState === 'playing' && (
         <div className="fixed inset-0 pointer-events-none z-30">
-          {/* Top-Left Score & Combo Perimeter Cluster */}
-          <div className="absolute top-3 left-3 sm:top-4 sm:left-4 flex items-center gap-2.5 pointer-events-auto">
+          {/* Top-Left Score & Visual Mini-Mission Cluster */}
+          <div className="absolute top-3 left-3 sm:top-4 sm:left-4 flex flex-wrap items-start gap-2 sm:gap-2.5 max-w-[60vw] sm:max-w-[75vw] pointer-events-auto">
             {playMode === 'score' ? (
-              <div
-                data-testid="score-hud"
-                className="flex items-center gap-3 px-4 py-2 rounded-2xl border-2 border-amber-400 shadow-lg"
-                style={{
-                  backgroundColor: 'rgba(69, 26, 3, 0.88)',
-                  fontVariantNumeric: 'tabular-nums',
-                }}
-              >
-                {/* Custom SVG Star Emblem */}
-                <svg
-                  className="w-8 h-8 shrink-0"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  aria-hidden="true"
+              <>
+                <div
+                  data-testid="score-hud"
+                  className="flex items-center gap-2 sm:gap-3 px-2.5 py-1.5 sm:px-4 sm:py-2 rounded-2xl border-2 border-amber-400 shadow-lg"
+                  style={{
+                    backgroundColor: 'rgba(69, 26, 3, 0.88)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
                 >
-                  <path
-                    d="M12 2L14.9 8.6L22 9.3L16.6 14L18.2 21L12 17.3L5.8 21L7.4 14L2 9.3L9.1 8.6L12 2Z"
-                    fill="#FACC15"
-                    stroke="#78350F"
-                    strokeWidth="1.5"
-                  />
-                </svg>
-
-                <div>
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <span
-                      data-testid="stage-badge"
-                      className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider text-amber-950"
-                      style={{ backgroundColor: currentStageMeta.accentHex }}
-                    >
-                      TAHAP {scoreState.stage}
-                    </span>
-                    <span className="hidden sm:inline text-[11px] font-bold text-amber-200 truncate max-w-[140px]">
-                      {currentStageMeta.title}
-                    </span>
-                  </div>
-
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
-                      SKOR
-                    </span>
-                    <span
-                      data-testid="score-value"
-                      className="text-2xl sm:text-3xl font-black text-white leading-none"
-                    >
-                      {Math.round(scoreState.score)}
-                    </span>
-                    <span className="text-xs font-bold text-amber-300">
-                      / {Math.round(scoreState.targetScore)}
-                    </span>
-                  </div>
-
-                  {/* Target Progress Bar */}
-                  <div className="w-32 sm:w-40 h-2 bg-amber-950 rounded-full overflow-hidden mt-1 border border-amber-700">
-                    <div
-                      className="h-full bg-amber-400 transition-all duration-200"
-                      style={{ width: `${progressPercent}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Combo Multiplier Pill */}
-                <div className="pl-2 border-l border-amber-700/80 text-center">
-                  <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
-                    KOMBO
-                  </div>
-                  <div
-                    data-testid="combo-value"
-                    className={`text-lg font-black leading-tight ${
-                      scoreState.combo > 1 ? 'text-emerald-300' : 'text-amber-100'
-                    }`}
+                  {/* Custom SVG Star Emblem */}
+                  <svg
+                    className="w-6 h-6 sm:w-8 sm:h-8 shrink-0"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
                   >
-                    x{Math.round(scoreState.combo)}
+                    <path
+                      d="M12 2L14.9 8.6L22 9.3L16.6 14L18.2 21L12 17.3L5.8 21L7.4 14L2 9.3L9.1 8.6L12 2Z"
+                      fill="#FACC15"
+                      stroke="#78350F"
+                      strokeWidth="1.5"
+                    />
+                  </svg>
+
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span
+                        data-testid="stage-badge"
+                        className="px-1.5 sm:px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider text-amber-950"
+                        style={{ backgroundColor: currentStageMeta.accentHex }}
+                      >
+                        TAHAP {scoreState.stage}
+                      </span>
+                      <span className="hidden lg:inline text-[11px] font-bold text-amber-200 truncate max-w-[140px]">
+                        {currentStageMeta.title}
+                      </span>
+                    </div>
+
+                    <div className="flex items-baseline gap-1.5 sm:gap-2">
+                      <span className="hidden sm:inline text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
+                        SKOR
+                      </span>
+                      <span
+                        data-testid="score-value"
+                        className="text-xl sm:text-3xl font-black text-white leading-none"
+                      >
+                        {Math.round(scoreState.score)}
+                      </span>
+                      <span className="text-[11px] sm:text-xs font-bold text-amber-300">
+                        / {Math.round(scoreState.targetScore)}
+                      </span>
+                    </div>
+
+                    {/* Target Progress Bar */}
+                    <div className="w-20 sm:w-36 h-1.5 sm:h-2 bg-amber-950 rounded-full overflow-hidden mt-1 border border-amber-700">
+                      <div
+                        className="h-full bg-amber-400 transition-all duration-200"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Combo Multiplier Pill */}
+                  <div className="pl-1.5 sm:pl-2 border-l border-amber-700/80 text-center">
+                    <div className="text-[9px] sm:text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
+                      KOMBO
+                    </div>
+                    <div
+                      data-testid="combo-value"
+                      className={`text-base sm:text-lg font-black leading-tight ${
+                        scoreState.comboPauseTimer > 0
+                          ? 'text-purple-300'
+                          : scoreState.combo > 1
+                          ? 'text-emerald-300'
+                          : 'text-amber-100'
+                      }`}
+                    >
+                      x{Math.round(scoreState.combo)}
+                    </div>
+                  </div>
+
+                  {/* Best Score Readout */}
+                  <div className="hidden md:block pl-2 border-l border-amber-700/80 text-center">
+                    <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
+                      REKOR
+                    </div>
+                    <div className="text-lg font-black text-amber-200 leading-tight">
+                      {Math.round(scoreState.bestScore)}
+                    </div>
                   </div>
                 </div>
 
-                {/* Best Score Readout */}
-                <div className="hidden sm:block pl-2 border-l border-amber-700/80 text-center">
-                  <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
-                    REKOR
-                  </div>
-                  <div className="text-lg font-black text-amber-200 leading-tight">
-                    {Math.round(scoreState.bestScore)}
-                  </div>
-                </div>
-              </div>
+                {/* Visual Mini-Mission Badge (Mode Balita Only - Pictogram + 3 Star Slots) */}
+                {scoreState.ageMode === 'balita' && (
+                  <MiniMissionBadge
+                    mission={scoreState.activeMission}
+                    goldenStarsEarned={scoreState.goldenStarsEarned}
+                    comboPaused={scoreState.comboPauseTimer > 0}
+                  />
+                )}
+              </>
             ) : (
               <div
                 className="flex items-center gap-2 px-3.5 py-2 rounded-2xl border-2 border-amber-300 shadow-md text-amber-100 text-xs font-bold"
@@ -483,6 +512,14 @@ export default function App() {
                 <span>Mode Bebas Sensorik 3D</span>
               </div>
             )}
+          </div>
+
+          {/* Top-Right Child-Safe Corner Button: Hold 2 Seconds to Toggle Mode Bayi / Mode Balita */}
+          <div className="absolute top-3 right-3 sm:top-4 sm:right-4 pointer-events-auto">
+            <AgeModeHoldButton
+              ageMode={scoreState.ageMode}
+              onChangeAgeMode={handleSelectAgeMode}
+            />
           </div>
 
           {/* Unified Collapsible Bottom Control Dock (Zero Side-Panel Clutter) */}
@@ -741,6 +778,8 @@ export default function App() {
         onSelectTheme={handleSelectTheme}
         playMode={playMode}
         onSelectPlayMode={handleSelectPlayMode}
+        ageMode={scoreState.ageMode}
+        onSelectAgeMode={handleSelectAgeMode}
         isMuted={isMuted}
         onToggleMute={handleToggleMute}
         onClearToys={() => engineRef.current?.clearAllToys(true)}

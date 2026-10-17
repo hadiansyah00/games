@@ -286,6 +286,98 @@ class BabySoundEngine {
       osc.stop(t + 0.6);
     });
   }
+
+  /**
+   * Play a soft, funny elastic "boing!" sound when touching a Playful Obstacle (Awan Jahil / Bola Karet)
+   */
+  public playGentleBoing() {
+    if (this.isMuted) return;
+    this.ensureRunning();
+    if (!this.ctx || !this.masterGain) return;
+
+    const audioTime = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    // Elastic pitch wobble: 220Hz -> 390Hz -> 250Hz -> 340Hz
+    osc.frequency.setValueAtTime(220, audioTime);
+    osc.frequency.exponentialRampToValueAtTime(390, audioTime + 0.09);
+    osc.frequency.exponentialRampToValueAtTime(250, audioTime + 0.19);
+    osc.frequency.exponentialRampToValueAtTime(340, audioTime + 0.30);
+
+    const vol = getSafeVolume(0.16, this.isMuted);
+    gain.gain.setValueAtTime(0.0001, audioTime);
+    gain.gain.linearRampToValueAtTime(vol, audioTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioTime + 0.36);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(audioTime);
+    osc.stop(audioTime + 0.38);
+  }
+
+  /**
+   * Play a joyful peek-a-boo chime when catching the Shy Object (+30 points)
+   */
+  public playPeekABooGiggle() {
+    if (this.isMuted) return;
+    this.ensureRunning();
+    if (!this.ctx || !this.masterGain) return;
+
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
+    const audioTime = this.ctx.currentTime;
+
+    notes.forEach((freq, idx) => {
+      if (!this.ctx || !this.masterGain) return;
+      const t = audioTime + idx * 0.055;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+
+      const vol = getSafeVolume(0.15, this.isMuted);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(vol, t + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.35);
+    });
+  }
+
+  /**
+   * Play a warm celebration melody when completing a Mini-Mission (+60 points & +1 Golden Star)
+   */
+  public playMissionCompleteFanfare() {
+    if (this.isMuted) return;
+    this.ensureRunning();
+    if (!this.ctx || !this.masterGain) return;
+
+    const notes = [523.25, 587.33, 659.25, 783.99, 1046.5]; // C5 D5 E5 G5 C6
+    const audioTime = this.ctx.currentTime;
+
+    notes.forEach((freq, idx) => {
+      if (!this.ctx || !this.masterGain) return;
+      const t = audioTime + idx * 0.07;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+
+      const vol = getSafeVolume(0.16, this.isMuted);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(vol, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.65);
+    });
+  }
 }
 
 export const babySound = new BabySoundEngine();

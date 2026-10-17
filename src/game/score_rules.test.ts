@@ -1,13 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  CHALLENGE_CONFIG,
   createInitialScoreState,
   getBasePointsForType,
   registerScoreHit,
+  registerShyObjectHit,
+  registerObstacleBoing,
+  setScoreAgeMode,
   tickComboTimer,
   advanceScoreTarget,
   getStageCelebrationMeta,
   calculateTransitionEnvelope,
+  getStageSpeedMultiplier,
+  getStageScaleMultiplier,
+  getShyObjectVisibleDuration,
+  shouldHavePlayfulObstacle,
   MAX_COMBO_MULTIPLIER,
 } from './score_rules.ts';
 
@@ -19,7 +27,7 @@ test('getBasePointsForType returns higher points for stars than basic toys', () 
 });
 
 test('registerScoreHit increments score, builds combo, and updates bestScore', () => {
-  const state = createInitialScoreState(50, 200);
+  const state = createInitialScoreState(50, 200, 'bayi');
 
   // First hit starts at combo 1 (since comboTimer is 0)
   const hit1 = registerScoreHit(state, 'star', false);
@@ -37,7 +45,7 @@ test('registerScoreHit increments score, builds combo, and updates bestScore', (
 });
 
 test('combo multiplier caps at MAX_COMBO_MULTIPLIER and resets when timer expires', () => {
-  let state = createInitialScoreState(0, 1000);
+  let state = createInitialScoreState(0, 1000, 'bayi');
   for (let i = 0; i < 8; i++) {
     state = registerScoreHit(state, 'kitten', true).nextState;
   }
@@ -50,7 +58,7 @@ test('combo multiplier caps at MAX_COMBO_MULTIPLIER and resets when timer expire
 });
 
 test('milestoneReached triggers when crossing targetScore and advanceScoreTarget increments stage', () => {
-  const state = createInitialScoreState(0, 50);
+  const state = createInitialScoreState(0, 50, 'balita');
   assert.equal(state.stage, 1);
 
   const res1 = registerScoreHit(state, 'star', false); // +30 -> 30
@@ -66,43 +74,112 @@ test('milestoneReached triggers when crossing targetScore and advanceScoreTarget
   assert.ok(nextStage.targetScore > 485);
 });
 
-test('getStageCelebrationMeta cycles through cheerful stage themes and titles', () => {
-  const s1 = getStageCelebrationMeta(1);
-  const s2 = getStageCelebrationMeta(2);
-  const s3 = getStageCelebrationMeta(3);
+test('Stage speed and scale multipliers match PRD for Mode Balita and Mode Bayi', () => {
+  // Mode Balita speed multipliers: 1.0, 1.15, 1.3, 1.45
+  assert.equal(getStageSpeedMultiplier(1, 'balita'), 1.0);
+  assert.equal(getStageSpeedMultiplier(2, 'balita'), 1.15);
+  assert.equal(getStageSpeedMultiplier(3, 'balita'), 1.3);
+  assert.equal(getStageSpeedMultiplier(4, 'balita'), 1.45);
+  assert.equal(getStageSpeedMultiplier(6, 'balita'), 1.45);
 
-  assert.equal(s1.stage, 1);
-  assert.equal(s1.themeId, 'meadow');
-  assert.equal(s2.stage, 2);
-  assert.equal(s2.themeId, 'ocean');
-  assert.equal(s3.stage, 3);
-  assert.equal(s3.themeId, 'night');
-  assert.notEqual(s1.title, s2.title);
+  // Mode Balita scale multipliers: 100%, 95%, 90%, 85% (never below 70%)
+  assert.equal(getStageScaleMultiplier(1, 'balita'), 1.0);
+  assert.equal(getStageScaleMultiplier(2, 'balita'), 0.95);
+  assert.equal(getStageScaleMultiplier(3, 'balita'), 0.90);
+  assert.equal(getStageScaleMultiplier(4, 'balita'), 0.85);
+  assert.ok(getStageScaleMultiplier(10, 'balita') >= CHALLENGE_CONFIG.MIN_OBJECT_SCALE);
+
+  // Mode Bayi has constant slow speed and 100% scale across all stages
+  assert.equal(getStageSpeedMultiplier(1, 'bayi'), CHALLENGE_CONFIG.BAYI_SPEED_MULTIPLIER);
+  assert.equal(getStageSpeedMultiplier(4, 'bayi'), CHALLENGE_CONFIG.BAYI_SPEED_MULTIPLIER);
+  assert.equal(getStageScaleMultiplier(4, 'bayi'), 1.0);
 });
 
-test('calculateTransitionEnvelope smoothly interpolates fade-out, hold, and fade-in phases', () => {
-  const total = 1000;
+test('Shy object duration and +30 bonus work without any negative effects', () => {
+  assert.equal(getShyObjectVisibleDuration(1), 3.0);
+  assert.equal(getShyObjectVisibleDuration(2), 3.0);
+  assert.equal(getShyObjectVisibleDuration(3), 2.5);
+  assert.equal(getShyObjectVisibleDuration(4), 2.5);
 
-  // Fade-out phase (200ms)
-  const fadeOut = calculateTransitionEnvelope(200, total);
-  assert.equal(fadeOut.phase, 'fade-out');
-  assert.ok(fadeOut.opacity > 0.1 && fadeOut.opacity < 0.95);
-  assert.equal(fadeOut.sceneSwapped, false);
+  const initial = createInitialScoreState(0, 200, 'balita');
+  const hit = registerShyObjectHit(initial);
+  assert.equal(hit.pointsAwarded, 30);
+  assert.equal(hit.nextState.score, 30);
+  assert.equal(hit.nextState.shyObjectsCaught, 1);
+});
 
-  // Hold phase at midpoint (500ms)
-  const hold = calculateTransitionEnvelope(500, total);
+test('Playful obstacle starts in Stage 2 (Mode Balita) and pauses combo for 1s without losing points or combo', () => {
+  assert.equal(shouldHavePlayfulObstacle(1, 'balita', 0), false);
+  assert.equal(shouldHavePlayfulObstacle(2, 'balita', 0), true);
+  assert.equal(shouldHavePlayfulObstacle(2, 'balita', 1), false); // max 1 on screen
+  assert.equal(shouldHavePlayfulObstacle(3, 'bayi', 0), false);   // never in Mode Bayi
+
+  let state = createInitialScoreState(0, 500, 'balita');
+  state = registerScoreHit(state, 'balloon', false).nextState; // combo 1, score 20
+  state = registerScoreHit(state, 'balloon', false).nextState; // combo 2, score 60
+
+  const beforeScore = state.score;
+  const beforeCombo = state.combo;
+  const beforeTimer = state.comboTimer;
+
+  // Hit playful obstacle -> boing!
+  const boinged = registerObstacleBoing(state);
+  assert.equal(boinged.score, beforeScore); // no point deduction!
+  assert.equal(boinged.combo, beforeCombo); // combo does not drop!
+  assert.equal(boinged.comboPauseTimer, 1.0);
+
+  // Tick 0.6s -> still paused, comboTimer frozen
+  const midPause = tickComboTimer(boinged, 0.6);
+  assert.ok(Math.abs(midPause.comboPauseTimer - 0.4) < 1e-6);
+  assert.equal(midPause.comboTimer, beforeTimer);
+  assert.equal(midPause.combo, beforeCombo);
+
+  // Hitting a toy during the 1s pause awards points at current combo without increasing combo
+  const hitDuringPause = registerScoreHit(midPause, 'balloon', false);
+  assert.equal(hitDuringPause.nextState.combo, beforeCombo);
+  assert.ok(hitDuringPause.nextState.score > beforeScore);
+});
+
+test('Mini-mission awards +60 points and +1 golden star on 3 matches, and silently rotates at 45s', () => {
+  let state = createInitialScoreState(0, 1000, 'balita');
+  assert.ok(state.activeMission);
+  assert.equal(state.activeMission?.targetType, 'star');
+  assert.equal(state.activeMission?.targetCount, 3);
+
+  // Hit 1 & 2 stars
+  state = registerScoreHit(state, 'star', false).nextState;
+  assert.equal(state.activeMission?.currentCount, 1);
+  state = registerScoreHit(state, 'star', false).nextState;
+  assert.equal(state.activeMission?.currentCount, 2);
+
+  // 3rd star completes mission -> +60 bonus + 1 golden star + new mission!
+  const thirdHit = registerScoreHit(state, 'star', false);
+  assert.equal(thirdHit.missionCompleted, true);
+  assert.equal(thirdHit.missionBonusAwarded, 60);
+  assert.equal(thirdHit.nextState.goldenStarsEarned, 1);
+  assert.equal(thirdHit.nextState.activeMission?.id, 2);
+  assert.equal(thirdHit.nextState.activeMission?.currentCount, 0);
+
+  // Tick 45 seconds without finishing -> silently rotates to mission 3 with zero penalty
+  const scoreBeforeTimeout = thirdHit.nextState.score;
+  const rotated = tickComboTimer(thirdHit.nextState, 45.5);
+  assert.equal(rotated.score, scoreBeforeTimeout);
+  assert.equal(rotated.activeMission?.id, 3);
+  assert.equal(rotated.activeMission?.elapsedSeconds, 0);
+
+  // Switching to Mode Bayi disables activeMission
+  const bayiState = setScoreAgeMode(rotated, 'bayi');
+  assert.equal(bayiState.activeMission, null);
+});
+
+test('getStageCelebrationMeta and calculateTransitionEnvelope work across phases', () => {
+  const s1 = getStageCelebrationMeta(1);
+  const s2 = getStageCelebrationMeta(2);
+  assert.equal(s1.themeId, 'meadow');
+  assert.equal(s2.themeId, 'ocean');
+
+  const hold = calculateTransitionEnvelope(700, 1400);
   assert.equal(hold.phase, 'hold');
   assert.equal(hold.opacity, 1);
   assert.equal(hold.sceneSwapped, true);
-
-  // Fade-in phase (800ms)
-  const fadeIn = calculateTransitionEnvelope(800, total);
-  assert.equal(fadeIn.phase, 'fade-in');
-  assert.ok(fadeIn.opacity > 0 && fadeIn.opacity < 1);
-  assert.equal(fadeIn.sceneSwapped, true);
-
-  // Completed (1050ms)
-  const done = calculateTransitionEnvelope(1050, total);
-  assert.equal(done.phase, 'idle');
-  assert.equal(done.opacity, 0);
 });

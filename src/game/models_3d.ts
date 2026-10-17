@@ -597,3 +597,234 @@ export function build3DRainbowLandmark(): THREE.Group {
 
   return group;
 }
+
+/**
+ * Builds a 3D Bush ('bush') or Fluffy Cloud ('cloud') cover prop that Shy Objects peek out from behind.
+ */
+export function build3DHidingCover(kind: 'bush' | 'cloud'): THREE.Group {
+  const group = new THREE.Group();
+
+  if (kind === 'bush') {
+    const leafMat1 = new THREE.MeshStandardMaterial({
+      color: 0x22c55e,
+      roughness: 0.55,
+      metalness: 0.04,
+    });
+    const leafMat2 = new THREE.MeshStandardMaterial({
+      color: 0x4ade80,
+      roughness: 0.48,
+      metalness: 0.04,
+    });
+    const berryMat = new THREE.MeshStandardMaterial({
+      color: 0xf43f5e,
+      roughness: 0.25,
+      metalness: 0.15,
+    });
+
+    const puffs = [
+      { x: 0, y: 0.42, z: 0, r: 0.55, mat: leafMat1 },
+      { x: -0.45, y: 0.34, z: 0.06, r: 0.42, mat: leafMat2 },
+      { x: 0.45, y: 0.34, z: 0.06, r: 0.42, mat: leafMat2 },
+      { x: -0.22, y: 0.52, z: -0.05, r: 0.38, mat: leafMat2 },
+      { x: 0.22, y: 0.52, z: -0.05, r: 0.38, mat: leafMat1 },
+    ];
+    puffs.forEach((p) => {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(p.r, 16, 16), p.mat);
+      m.position.set(p.x, p.y, p.z);
+      m.scale.set(1.1, 0.9, 0.85);
+      m.castShadow = true;
+      group.add(m);
+    });
+
+    // Little decorative berries/flowers on the bush front
+    [-0.32, 0.05, 0.35].forEach((bx, idx) => {
+      const berry = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 10), berryMat);
+      berry.position.set(bx, 0.38 + (idx % 2) * 0.12, 0.38);
+      group.add(berry);
+    });
+  } else {
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.35,
+      metalness: 0.05,
+    });
+    const puffs = [
+      { x: 0, y: 0.45, z: 0, r: 0.54 },
+      { x: -0.46, y: 0.36, z: 0.04, r: 0.42 },
+      { x: 0.46, y: 0.36, z: 0.04, r: 0.42 },
+      { x: 0, y: 0.25, z: 0.12, r: 0.44 },
+    ];
+    puffs.forEach((p) => {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(p.r, 16, 16), cloudMat);
+      m.position.set(p.x, p.y, p.z);
+      m.castShadow = true;
+      group.add(m);
+    });
+  }
+
+  return group;
+}
+
+/**
+ * Builds the cute 3D Shy Peek-a-Boo Character (Objek Malu-Malu) with blushing cheeks,
+ * waving paws, and a golden star crown that pops out from behind a bush or cloud.
+ */
+export function build3DShyPeekCharacter(): THREE.Group {
+  const root = new THREE.Group();
+
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0xf472b6, // Warm candy pink
+    roughness: 0.38,
+    metalness: 0.08,
+  });
+  const earInnerMat = new THREE.MeshStandardMaterial({
+    color: 0xfef08a,
+    roughness: 0.45,
+    metalness: 0.05,
+  });
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xfacc15,
+    roughness: 0.2,
+    metalness: 0.75,
+    emissive: 0x78350f,
+    emissiveIntensity: 0.2,
+  });
+  const cheekMat = new THREE.MeshStandardMaterial({
+    color: 0xf43f5e,
+    roughness: 0.3,
+  });
+
+  // Plump head/torso
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 22, 22), bodyMat);
+  head.position.y = 0.55;
+  head.scale.set(1.08, 0.98, 0.95);
+  head.castShadow = true;
+  root.add(head);
+
+  // Cute floppy peek-a-boo ears
+  [-0.36, 0.36].forEach((ex, i) => {
+    const ear = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.32, 8, 14), bodyMat);
+    ear.position.set(ex, 0.98, 0);
+    ear.rotation.z = i === 0 ? 0.35 : -0.35;
+    root.add(ear);
+
+    const inner = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.22, 8, 12), earInnerMat);
+    inner.position.set(ex, 0.98, 0.06);
+    inner.rotation.z = i === 0 ? 0.35 : -0.35;
+    root.add(inner);
+  });
+
+  // Mini Golden Star Crown on top of head so toddlers immediately spot the +30 bonus friend
+  const crownStar = new THREE.Mesh(getStarExtrudeGeometry(), goldMat);
+  crownStar.scale.setScalar(0.38);
+  crownStar.position.set(0, 1.18, 0.05);
+  root.add(crownStar);
+
+  // Little waving paws in front
+  [-0.38, 0.38].forEach((px) => {
+    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 14), earInnerMat);
+    paw.position.set(px, 0.42, 0.38);
+    root.add(paw);
+  });
+
+  // Big rosy cheeks
+  [-0.28, 0.28].forEach((cx) => {
+    const cheek = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 12), cheekMat);
+    cheek.position.set(cx, 0.5, 0.44);
+    cheek.scale.set(1.2, 0.8, 0.5);
+    root.add(cheek);
+  });
+
+  addExpressive3DEyes(root, 0.62, 0.44, 0.19, 0.95);
+
+  return root;
+}
+
+/**
+ * Builds the 3D Playful Obstacle (Rintangan Lucu: 'cloud' = Awan Jahil, 'ball' = Bola Karet)
+ * starting at Stage 2 in Mode Balita.
+ */
+export function build3DPlayfulObstacle(variant: 'cloud' | 'ball' = 'cloud'): THREE.Group {
+  const root = new THREE.Group();
+
+  if (variant === 'cloud') {
+    // Cheeky Periwinkle Puff Cloud (Awan Jahil) with a bouncy silly grin
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: 0xc4b5fd, // Soft playful lavender-blue
+      roughness: 0.32,
+      metalness: 0.08,
+    });
+    const accentMat = new THREE.MeshStandardMaterial({
+      color: 0x818cf8,
+      roughness: 0.28,
+      metalness: 0.12,
+    });
+    const cheekMat = new THREE.MeshStandardMaterial({
+      color: 0xfb7185,
+      roughness: 0.3,
+    });
+
+    const puffs = [
+      { x: 0, y: 0.78, z: 0, r: 0.58, mat: cloudMat },
+      { x: -0.48, y: 0.7, z: 0.04, r: 0.42, mat: cloudMat },
+      { x: 0.48, y: 0.7, z: 0.04, r: 0.42, mat: cloudMat },
+      { x: -0.24, y: 1.08, z: -0.02, r: 0.36, mat: accentMat },
+      { x: 0.24, y: 1.08, z: -0.02, r: 0.36, mat: accentMat },
+    ];
+    puffs.forEach((p) => {
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(p.r, 18, 18), p.mat);
+      mesh.position.set(p.x, p.y, p.z);
+      mesh.castShadow = true;
+      root.add(mesh);
+    });
+
+    addExpressive3DEyes(root, 0.84, 0.52, 0.22, 1.0);
+
+    // Rosy cheeks + silly bouncy O-mouth / grin
+    [-0.34, 0.34].forEach((cx) => {
+      const cheek = new THREE.Mesh(new THREE.SphereGeometry(0.085, 12, 12), cheekMat);
+      cheek.position.set(cx, 0.72, 0.52);
+      root.add(cheek);
+    });
+
+    const mouth = new THREE.Mesh(
+      new THREE.TorusGeometry(0.11, 0.032, 10, 20),
+      new THREE.MeshStandardMaterial({ color: 0x312e81, roughness: 0.2 })
+    );
+    mouth.position.set(0, 0.68, 0.55);
+    root.add(mouth);
+  } else {
+    // Bouncy Rubber Ball (Bola Karet) with glossy clearcoat and equator band
+    const ballMat = new THREE.MeshPhysicalMaterial({
+      color: 0xf97316,
+      roughness: 0.15,
+      metalness: 0.05,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.1,
+    });
+    const stripeMat = new THREE.MeshStandardMaterial({
+      color: 0xfef08a,
+      roughness: 0.25,
+      metalness: 0.1,
+    });
+
+    const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.64, 24, 24), ballMat);
+    sphere.position.y = 0.68;
+    sphere.castShadow = true;
+    root.add(sphere);
+
+    const band1 = new THREE.Mesh(new THREE.TorusGeometry(0.63, 0.06, 12, 32), stripeMat);
+    band1.position.y = 0.68;
+    band1.rotation.x = Math.PI / 2;
+    root.add(band1);
+
+    const band2 = new THREE.Mesh(new THREE.TorusGeometry(0.63, 0.06, 12, 32), stripeMat);
+    band2.position.y = 0.68;
+    root.add(band2);
+
+    addExpressive3DEyes(root, 0.76, 0.58, 0.22, 0.95);
+  }
+
+  return root;
+}
+

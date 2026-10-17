@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { THEMES, ThemeConfig } from '../game/themes';
-import { GamePlayMode } from '../game/score_rules';
+import { AgeMode, GamePlayMode } from '../game/score_rules';
 import { Volume2, VolumeX, Sparkles, Maximize, RotateCcw, X, ShieldCheck, Trophy } from 'lucide-react';
 
 interface ParentModalProps {
@@ -10,6 +10,8 @@ interface ParentModalProps {
   onSelectTheme: (themeId: string) => void;
   playMode: GamePlayMode;
   onSelectPlayMode: (mode: GamePlayMode) => void;
+  ageMode: AgeMode;
+  onSelectAgeMode: (ageMode: AgeMode) => void;
   isMuted: boolean;
   onToggleMute: () => void;
   onClearToys: () => void;
@@ -24,6 +26,8 @@ export const ParentModal: React.FC<ParentModalProps> = ({
   onSelectTheme,
   playMode,
   onSelectPlayMode,
+  ageMode,
+  onSelectAgeMode,
   isMuted,
   onToggleMute,
   onClearToys,
@@ -58,7 +62,7 @@ export const ParentModal: React.FC<ParentModalProps> = ({
       aria-modal="true"
       aria-label="Pengaturan Orang Tua"
     >
-      <div className="w-full max-w-md bg-amber-50 rounded-3xl p-6 shadow-2xl border-4 border-amber-300 text-slate-800">
+      <div className="w-full max-w-md bg-amber-50 rounded-3xl p-6 shadow-2xl border-4 border-amber-300 text-slate-800 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between pb-3 border-b border-amber-200">
           <div className="flex items-center gap-2">
             <span className="text-2xl" role="img" aria-label="Beruang">🧸</span>
@@ -91,6 +95,42 @@ export const ParentModal: React.FC<ParentModalProps> = ({
           </div>
         ) : (
           <div className="py-4 space-y-4">
+            {/* Age Mode Switcher (Bayi 6m-2y vs Balita 2-4y) */}
+            <div>
+              <span className="block text-xs font-bold uppercase tracking-wider text-amber-800 mb-2">
+                Mode Usia Anak
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onSelectAgeMode('balita')}
+                  aria-pressed={ageMode === 'balita'}
+                  className={`p-3 rounded-2xl border-2 text-left transition ${
+                    ageMode === 'balita'
+                      ? 'border-amber-600 bg-amber-200 text-amber-950 font-bold'
+                      : 'border-amber-200 bg-white text-slate-700'
+                  }`}
+                >
+                  <div className="text-sm font-bold">Mode Balita (2-4 Thn)</div>
+                  <div className="text-[11px] text-slate-600">Misi mini, cilukba & awan boing</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onSelectAgeMode('bayi')}
+                  aria-pressed={ageMode === 'bayi'}
+                  className={`p-3 rounded-2xl border-2 text-left transition ${
+                    ageMode === 'bayi'
+                      ? 'border-amber-600 bg-amber-200 text-amber-950 font-bold'
+                      : 'border-amber-200 bg-white text-slate-700'
+                  }`}
+                >
+                  <div className="text-sm font-bold">Mode Bayi (6Bln-2Thn)</div>
+                  <div className="text-[11px] text-slate-600">Gerak lambat & tenang tanpa misi</div>
+                </button>
+              </div>
+            </div>
+
             {/* Play Mode Switcher */}
             <div>
               <span className="block text-xs font-bold uppercase tracking-wider text-amber-800 mb-2">
